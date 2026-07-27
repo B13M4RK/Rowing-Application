@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Rudertraining App</title>
 
+<!-- Supabase SDK einbinden -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
 <style>
 :root{
@@ -156,16 +158,12 @@ button{
     cursor:pointer;
 }
 
-.calBtn:hover{
-    color:#5f6368;
-}
-
 .monthLabel{
     font-size:12px;
     color:#8a8a8f;
 }
 
-/* STATS FILTER (FIX + TABELLE LOOK) */
+/* STATS FILTER */
 .statsFilter{
     display:flex;
     gap:6px;
@@ -195,10 +193,9 @@ button{
 
 .dateWrap input{
     width:100%;
-    padding-right:40px; /* Platz für Icon-Feeling */
+    padding-right:40px;
     cursor:pointer;
 }
-
 </style>
 </head>
 
@@ -295,42 +292,60 @@ button{
 </div>
 
 <script>
+// ⚠️ Trage hier deine Supabase-Daten ein:
+const SUPABASE_URL = "https://DEIN_PROJEKT.supabase.co";
+const SUPABASE_KEY = "DEIN_ANON_KEY";
 
-const initialData = {
-    people: [
-        { id: 1, f: "Max", l: "Mustermann" }
-    ],
-    trainings: [
-        {
-            id: 10,
-            date: "2026-06-22",
-            type: "Wasser",
-            people: [1]
-        }
-    ]
-};
-
-// FIRST RUN SETUP
-if (!localStorage.getItem("people")) {
-    localStorage.setItem("people", JSON.stringify(initialData.people));
-}
-
-if (!localStorage.getItem("trainings")) {
-    localStorage.setItem("trainings", JSON.stringify(initialData.trainings));
-}
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const state = {
-    people: JSON.parse(localStorage.getItem("people")),
-    trainings: JSON.parse(localStorage.getItem("trainings")),
+    people: [],
+    trainings: [],
     selected: [],
     statsFilter: "all"
 };
 
 let currentMonth = new Date();
 
-function save(){
-    localStorage.setItem("people", JSON.stringify(state.people));
-    localStorage.setItem("trainings", JSON.stringify(state.trainings));
+// 🔄 SCHRITT 1: LOKALE DATEN AUTOMATISCH AUF DEN SERVER MIGRIEREN
+async function syncLocalDataToCloud() {
+    const localPeople = localStorage.getItem("people");
+    const localTrainings = localStorage.getItem("trainings");
+
+    if (localPeople) {
+        const parsedPeople = JSON.parse(localPeople);
+        if (parsedPeople.length > 0) {
+            console.log("Übergetragene Personen hochladen...");
+            for (const p of parsedPeople) {
+                await db.from("people").insert([{ id: p.id, f: p.f, l: p.l }]);
+            }
+        }
+        localStorage.removeItem("people"); // Daten sicher in der Cloud, lokal bereinigen
+    }
+
+    if (localTrainings) {
+        const parsedTrainings = JSON.parse(localTrainings);
+        if (parsedTrainings.length > 0) {
+            console.log("Übergetragene Trainings hochladen...");
+            for (const t of parsedTrainings) {
+                await db.from("trainings").insert([{ id: t.id, date: t.date, type: t.type, people: t.people }]);
+            }
+        }
+        localStorage.removeItem("trainings");
+    }
+}
+
+// 🌐 DATEN VOM SERVER LADEN
+async function fetchCloudData() {
+    await syncLocalDataToCloud(); // Prüfe vorher auf ungesicherte Handy-Daten
+
+    const { data: peopleData } = await db.from("people").select("*");
+    const { data: trainingsData } = await db.from("trainings").select("*");
+
+    state.people = peopleData || [];
+    state.trainings = trainingsData || [];
+
+    render();
 }
 
 /* NAV */
@@ -345,56 +360,52 @@ document.querySelectorAll(".nav button").forEach(btn=>{
 });
 
 /* ADD PERSON */
-document.getElementById("addPerson").onclick=()=>{
-    const f=document.getElementById("first");
-    const l=document.getElementById("last");
+document.getElementById("addPerson").onclick = async () => {
+    const f = document.getElementById("first");
+    const l = document.getElementById("last");
 
-    const first=f.value.trim();
-    const last=l.value.trim();
+    const first = f.value.trim();
+    const last = l.value.trim();
 
-    if(!first||!last) return;
+    if (!first || !last) return;
 
-    if(state.people.some(p=>p.f===first&&p.l===last)) return;
+    const newPerson = { id: Date.now(), f: first, l: last };
+    
+    await db.from("people").insert([newPerson]);
 
-    state.people.push({id:Date.now(),f:first,l:last});
-    save();
+    f.value = "";
+    l.value = "";
 
-    f.value="";
-    l.value="";
-
-    render();
+    fetchCloudData();
 };
 
 /* DELETE PERSON */
-function deletePerson(id){
-    state.people = state.people.filter(p=>p.id!==id);
-    state.trainings.forEach(t=>{
-        t.people = (t.people||[]).filter(x=>x!==id);
-    });
-    save();
-    render();
+async function deletePerson(id) {
+    await db.from("people").delete().eq("id", id);
+    fetchCloudData();
 }
 
 /* ADD TRAINING */
-document.getElementById("addTraining").onclick=()=>{
-    const d=document.getElementById("date").value;
-    const t=document.getElementById("type").value;
+document.getElementById("addTraining").onclick = async () => {
+    const d = document.getElementById("date").value;
+    const t = document.getElementById("type").value;
 
-    if(!d) return;
+    if (!d) return;
 
-    if(state.trainings.some(x=>x.date===d))
-        return alert("Schon Training");
+    if (state.trainings.some(x => x.date === d))
+        return alert("Schon Training an diesem Tag");
 
-    state.trainings.push({
-        id:Date.now(),
-        date:d,
-        type:t,
-        people:[...state.selected]
-    });
+    const newTraining = {
+        id: Date.now(),
+        date: d,
+        type: t,
+        people: [...state.selected]
+    };
 
-    state.selected=[];
-    save();
-    render();
+    await db.from("trainings").insert([newTraining]);
+
+    state.selected = [];
+    fetchCloudData();
 };
 
 /* SEARCH */
@@ -410,15 +421,14 @@ document.getElementById("search").oninput=(e)=>{
         div.textContent=p.f+" "+p.l;
 
         div.onclick=()=>{
-    if(!state.selected.includes(p.id)){
-        state.selected.push(p.id);
-        renderSelected();
-    }
+            if(!state.selected.includes(p.id)){
+                state.selected.push(p.id);
+                renderSelected();
+            }
 
-    // 🔥 INPUT LEEREN + SUCHERGEBNISSE RESET
-    document.getElementById("search").value = "";
-    document.getElementById("suggestions").innerHTML = "";
-};
+            document.getElementById("search").value = "";
+            document.getElementById("suggestions").innerHTML = "";
+        };
 
         box.appendChild(div);
     });
@@ -460,11 +470,17 @@ function renderPeople(){
 
         const i1=document.createElement("input");
         i1.value=p.f;
-        i1.oninput=(e)=>{p.f=e.target.value;save();};
+        i1.onchange=async (e)=>{
+            await db.from("people").update({ f: e.target.value }).eq("id", p.id);
+            fetchCloudData();
+        };
 
         const i2=document.createElement("input");
         i2.value=p.l;
-        i2.oninput=(e)=>{p.l=e.target.value;save();};
+        i2.onchange=async (e)=>{
+            await db.from("people").update({ l: e.target.value }).eq("id", p.id);
+            fetchCloudData();
+        };
 
         inputs.appendChild(i1);
         inputs.appendChild(i2);
@@ -481,7 +497,8 @@ function renderPeople(){
     });
 }
 
-/* CALENDAR */function renderCalendar(){
+/* CALENDAR */
+function renderCalendar(){
     const div = document.getElementById("calendar");
     const label = document.getElementById("monthLabel");
 
@@ -502,16 +519,12 @@ function renderPeople(){
 
     const offset = firstDay === 0 ? 6 : firstDay - 1;
 
-    // leere Felder vor Monatsstart
     for(let i = 0; i < offset; i++){
         div.appendChild(document.createElement("div"));
     }
 
-    // Tage rendern
     for(let d = 1; d <= days; d++){
-
-        const dateStr =
-            `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+        const dateStr = `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
 
         const training = state.trainings.find(t => t.date === dateStr);
 
@@ -525,7 +538,6 @@ function renderPeople(){
             if(training.type === "Wasser") el.classList.add("water");
             if(training.type === "Kraftraum") el.classList.add("gym");
 
-            // klickbar nur wenn Training existiert
             el.style.cursor = "pointer";
             el.onclick = () => showTraining(training);
         }
@@ -551,24 +563,21 @@ function renderStats(){
     div.innerHTML="";
 
     const sorted = [...state.people].map(p => {
+        const filtered = state.trainings.filter(t => {
+            const isPerson = (t.people || []).includes(p.id);
+            if(state.statsFilter === "all") return isPerson;
+            return isPerson && t.type === state.statsFilter;
+        });
 
-    const filtered = state.trainings.filter(t => {
-        const isPerson = t.people.includes(p.id);
+        return {
+            name: `${p.f} ${p.l}`,
+            count: filtered.length
+        };
+    }).sort((a,b)=>b.count-a.count);
 
-        if(state.statsFilter === "all") return isPerson;
-
-        return isPerson && t.type === state.statsFilter;
+    sorted.forEach(r=>{
+        div.innerHTML += `${r.name}: <b>${r.count}</b><br>`;
     });
-
-    return {
-        name: `${p.f} ${p.l}`,
-        count: filtered.length
-    };
-}).sort((a,b)=>b.count-a.count);
-
-sorted.forEach(r=>{
-    div.innerHTML += `${r.name}: <b>${r.count}</b><br>`;
-});
 }
 
 document.querySelectorAll(".statsFilter button").forEach(btn=>{
@@ -583,8 +592,9 @@ document.querySelectorAll(".statsFilter button").forEach(btn=>{
 });
 
 document.getElementById("date").addEventListener("click", (e)=>{
-    e.target.showPicker?.(); // moderne Browser
+    e.target.showPicker?.();
 });
+
 function showTraining(training){
     const box = document.getElementById("popupContent");
 
@@ -598,39 +608,11 @@ function showTraining(training){
     box.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;">
         <h3 style="margin:0;">${training.type}</h3>
-
-        <!-- ❌ jetzt Schließen oben rechts -->
-        <button onclick="closePopup()"
-            style="
-                width:32px;
-                height:32px;
-                border:none;
-                background:#9aa0a6;
-                color:white;
-                border-radius:8px;
-                font-weight:bold;
-                cursor:pointer;
-            ">×</button>
+        <button onclick="closePopup()" style="width:32px;height:32px;border:none;background:#9aa0a6;color:white;border-radius:8px;font-weight:bold;cursor:pointer;">×</button>
     </div>
-
     <p><b>Personen:</b><br>${names || "Keine"}</p>
-
-    <!-- 🗑 Delete Button unten -->
-    <button onclick="deleteTraining(${training.id})"
-        style="
-            width:100%;
-            margin-top:10px;
-            border:none;
-            background:#ff3b30;
-            color:white;
-            border-radius:12px;
-            padding:10px;
-            font-weight:600;
-            cursor:pointer;
-        ">
-        Löschen
-    </button>
-`;
+    <button onclick="deleteTraining(${training.id})" style="width:100%;margin-top:10px;border:none;background:#ff3b30;color:white;border-radius:12px;padding:10px;font-weight:600;cursor:pointer;">Löschen</button>
+    `;
 
     document.getElementById("popup").style.display = "flex";
 }
@@ -639,14 +621,12 @@ function closePopup(){
     document.getElementById("popup").style.display = "none";
 }
 
-function deleteTraining(id){
-    state.trainings = state.trainings.filter(t => t.id !== id);
-    save();
-    render();
+async function deleteTraining(id){
+    await db.from("trainings").delete().eq("id", id);
+    fetchCloudData();
     closePopup();
 }
 
-/* RENDER */
 function render(){
     renderSelected();
     renderPeople();
@@ -654,7 +634,8 @@ function render(){
     renderStats();
 }
 
-render();
+// App starten & Daten synchronisieren
+fetchCloudData();
 
 </script>
 
